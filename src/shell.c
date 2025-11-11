@@ -3,103 +3,125 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
-#include <readline/readline.h>
-#include <readline/history.h>
+#include <signal.h>
+#include <stddef.h>
 #include "shell.h"
+#include "tokenize.h"
+#include "execute.h"
+#include "variables.h"
 
-char *read_input() {
-    char *line = readline("myshell> ");
-    if (line && *line)
-        add_history(line);
+#define MAX_COMMANDS 20
+#define MAX_BG_JOBS 50
+
+// Background job struct
+typedef struct {
+    pid_t pid;
+    char cmdline[1024];
+} bg_job_t;
+
+bg_job_t bg_jobs[MAX_BG_JOBS];
+int bg_count = 0;
+
+// Check for completed background jobs
+void check_bg_jobs() {
+    int status;
+    for (int i = 0; i < bg_count; i++) {
+        pid_t ret = waitpid(bg_jobs[i].pid, &status, WNOHANG);
+        if (ret > 0) {
+            printf("\n[Background Finished] PID: %d CMD: %s\n", bg_jobs[i].pid, bg_jobs[i].cmdline);
+            // Remove from list
+            for (int j = i; j < bg_count - 1; j++) {
+                bg_jobs[j] = bg_jobs[j + 1];
+            }
+            bg_count--;
+            i--;
+        }
+    }
+}
+
+// Add a new background job
+void add_bg_job(pid_t pid, const char *cmdline) {
+    if (bg_count < MAX_BG_JOBS) {
+        bg_jobs[bg_count].pid = pid;
+        strncpy(bg_jobs[bg_count].cmdline, cmdline, sizeof(bg_jobs[bg_count].cmdline) - 1);
+        bg_jobs[bg_count].cmdline[sizeof(bg_jobs[bg_count].cmdline) - 1] = '\0';
+        bg_count++;
+    }
+}
+
+// Show all background jobs
+void show_jobs() {
+    for (int i = 0; i < bg_count; i++) {
+        printf("[%d] PID: %d CMD: %s\n", i + 1, bg_jobs[i].pid, bg_jobs[i].cmdline);
+    }
+}
+
+// Read input from user
+char* read_cmd(const char *prompt) {
+    char *line = NULL;
+    size_t size = 0;
+    printf("%s", prompt);
+    ssize_t nread = getline(&line, &size, stdin);
+    if (nread == -1) {
+        free(line);
+        return NULL;
+    }
+    // Remove trailing newline
+    if (line[nread - 1] == '\n') line[nread - 1] = '\0';
     return line;
 }
 
-void execute_command_from_string(char *cmd_str) {
-    command_t commands[MAX_COMMANDS];
-    int num_cmds = tokenize(cmd_str, commands);
-    for (int i = 0; i < num_cmds; i++)
-        execute_command(&commands[i], commands[i].background);
-}
-
-int execute_if_block(const char *cmd_str) {
-    command_t commands[MAX_COMMANDS];
-    char temp[1024];
-    strncpy(temp, cmd_str, sizeof(temp));
-    int num_cmds = tokenize(temp, commands);
-    int status = 1;
-
-    for (int i = 0; i < num_cmds; i++) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            execvp(commands[i].args[0], commands[i].args);
-            perror("execvp");
-            exit(1);
-        } else if (pid > 0) {
-            waitpid(pid, &status, 0);
-        } else {
-            perror("fork");
-            return -1;
-        }
-    }
-
-    return WEXITSTATUS(status);
-}
-
-void handle_if_structure() {
-    char line[1024];
-    char if_cmd[1024] = {0};
-    char then_block[50][1024];
-    char else_block[50][1024];
-    int then_count = 0, else_count = 0, in_else = 0;
-
-    printf("(if) condition command:\n");
-    if (!fgets(if_cmd, sizeof(if_cmd), stdin)) return;
-    if_cmd[strcspn(if_cmd, "\n")] = 0;
-
-    printf("(if) Enter script lines (then/else/fi to control):\n");
-    while (fgets(line, sizeof(line), stdin)) {
-        line[strcspn(line, "\n")] = 0;
-        if (strcmp(line, "then") == 0) continue;
-        if (strcmp(line, "else") == 0) { in_else = 1; continue; }
-        if (strcmp(line, "fi") == 0) break;
-
-        if (!in_else)
-            strncpy(then_block[then_count++], line, sizeof(line));
-        else
-            strncpy(else_block[else_count++], line, sizeof(line));
-    }
-
-    int result = execute_if_block(if_cmd);
-    if (result == 0) {
-        for (int i = 0; i < then_count; i++)
-            execute_command_from_string(then_block[i]);
-    } else {
-        for (int i = 0; i < else_count; i++)
-            execute_command_from_string(else_block[i]);
-    }
-}
-
+// Process a single line (handles ; and &)
 void process_input(char *line) {
     if (!line) return;
 
-    if (strncmp(line, "if", 2) == 0) {
-        handle_if_structure();
-        free(line);
-        return;
+    check_bg_jobs();  // reap zombies
+
+    // Split by semicolon
+    char *cmd_str = strtok(line, ";");
+    while (cmd_str) {
+        int background = 0;
+        size_t len = strlen(cmd_str);
+
+        // Check for background &
+        if (len > 0 && cmd_str[len - 1] == '&') {
+            background = 1;
+            cmd_str[len - 1] = '\0';
+        }
+
+        // Tokenize
+        command_t commands[MAX_COMMANDS];
+        int num_commands = tokenize(cmd_str, commands);
+
+        for (int i = 0; i < num_commands; i++) {
+            // Handle shell variables assignment
+            for (int j = 0; j < commands[i].argc; j++) {
+                char *eq = strchr(commands[i].args[j], '=');
+                if (eq) {
+                    *eq = '\0';
+                    set_variable(commands[i].args[j], eq + 1);
+                    *eq = '=';  // restore
+                    commands[i].args[j] = NULL;  // skip execution
+                } else if (commands[i].args[j][0] == '$') {
+                    char *val = get_variable(commands[i].args[j] + 1);
+                    if (val) commands[i].args[j] = val;
+                }
+            }
+
+            // Built-in commands
+            if (commands[i].argc > 0 && strcmp(commands[i].args[0], "jobs") == 0) {
+                show_jobs();
+            } else if (commands[i].argc > 0 && strcmp(commands[i].args[0], "set") == 0) {
+                print_all_variables();
+            } else if (commands[i].argc > 0 && strcmp(commands[i].args[0], "exit") == 0) {
+                printf("Bye!\n");
+                exit(0);
+            } else {
+                execute_command(&commands[i], background);
+            }
+        }
+
+        cmd_str = strtok(NULL, ";");
     }
-
-    command_t commands[MAX_COMMANDS];
-    int num_cmds = tokenize(line, commands);
-    for (int i = 0; i < num_cmds; i++)
-        execute_command(&commands[i], commands[i].background);
-
     free(line);
-}
-
-void shell_loop() {
-    while (1) {
-        char *line = read_input();
-        if (!line) break;
-        process_input(line);
-    }
 }

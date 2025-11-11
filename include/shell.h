@@ -1,25 +1,34 @@
 #ifndef SHELL_H
 #define SHELL_H
 
+#include <stddef.h>     // for size_t
+#include <sys/types.h>  // for pid_t
 #include <stdio.h>
 
-#define MAX_ARGS 100
 #define MAX_COMMANDS 100
+#define MAX_BG_JOBS 50
+#define MAX_CMDLINE 1024
 
 typedef struct {
-    char *args[MAX_ARGS];
-    int background;
+    pid_t pid;
+    char cmdline[MAX_CMDLINE];
+} bg_job_t;
+
+// Background job list
+extern bg_job_t bg_jobs[MAX_BG_JOBS];
+extern int bg_count;
+
+typedef struct {
+    char *args[100]; // arguments
+    int argc;
 } command_t;
 
+// Shell functions
+char* read_cmd(const char* prompt);
 void shell_loop();
 void process_input(char *line);
-char *read_input();
-int tokenize(char *line, command_t *commands);
-void execute_command(command_t *cmd, int background);
-
-// --- Feature 7 ---
-void handle_if_structure();
-int execute_if_block(const char *cmd);
-void execute_command_from_string(char *cmd_str);
+void check_bg_jobs();
+void add_bg_job(pid_t pid, const char *cmdline);
+void show_jobs();
 
 #endif
