@@ -2,23 +2,21 @@ CC = gcc
 CFLAGS = -Wall -g -Iinclude
 LDFLAGS = -lreadline
 
-SRC_DIR = src
-OBJ_DIR = obj
-BIN_DIR = bin
+SRCS = src/main.c src/shell.c src/tokenize.c src/execute.c
+OBJS = $(patsubst src/%.c,obj/%.o,$(SRCS))
+BIN = bin/myshell
 
-SRCS = $(SRC_DIR)/main.c $(SRC_DIR)/execute.c $(SRC_DIR)/shell.c
-OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/execute.o $(OBJ_DIR)/shell.o
-TARGET = $(BIN_DIR)/myshell
+.PHONY: all clean
 
-all: $(TARGET)
+all: $(BIN)
 
-$(TARGET): $(OBJS)
-	@mkdir -p $(BIN_DIR)
+$(BIN): $(OBJS)
+	mkdir -p bin
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
-	@mkdir -p $(OBJ_DIR)
+obj/%.o: src/%.c
+	mkdir -p obj
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR)/*.o $(BIN_DIR)/myshell
+	rm -rf obj/*.o bin/myshell
