@@ -2,78 +2,113 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <readline/readline.h>
-#include <readline/history.h>
+#include <sys/wait.h>
 #include "shell.h"
 
-// Reads command using GNU Readline
-char* read_cmd(const char* prompt, FILE* fp) {
-    char *line = readline(prompt);   // Read input with line editing
-    if (line && *line) {             // Non-empty line
-        add_history(line);           // Add to history automatically
+static bg_job_t bg_jobs[MAX_BG_JOBS];
+static int bg_count = 0;
+
+/* Check and reap finished background jobs */
+void check_bg_jobs() {
+    int status;
+    for (int i = 0; i < bg_count; ) {
+        pid_t ret = waitpid(bg_jobs[i].pid, &status, WNOHANG);
+        if (ret > 0) {
+            printf("\n[Background finished] %s (PID %d)\n", bg_jobs[i].cmdline, bg_jobs[i].pid);
+            for (int j = i; j < bg_count - 1; j++)
+                bg_jobs[j] = bg_jobs[j + 1];
+            bg_count--;
+        } else {
+            i++;
+        }
     }
+}
+
+/* Add a job to bg list */
+void add_bg_job(int pid, const char* cmdline) {
+    if (bg_count < MAX_BG_JOBS) {
+        bg_jobs[bg_count].pid = pid;
+        strncpy(bg_jobs[bg_count].cmdline, cmdline, 255);
+        bg_jobs[bg_count].cmdline[255] = '\0';
+        bg_count++;
+    }
+}
+
+/* Print active background jobs */
+void print_bg_jobs() {
+    printf("Active background jobs:\n");
+    for (int i = 0; i < bg_count; i++)
+        printf("[%d] %s\n", bg_jobs[i].pid, bg_jobs[i].cmdline);
+}
+
+/* readline wrapper */
+char* read_cmd(const char* prompt, FILE* fp) {
+    char* line = NULL;
+    size_t size = 0;
+    if (fp == stdin) {
+        printf("%s", prompt);
+        fflush(stdout);
+    }
+    if (getline(&line, &size, fp) == -1) {
+        free(line);
+        return NULL;
+    }
+    /* remove newline */
+    line[strcspn(line, "\n")] = 0;
     return line;
 }
 
-// Handle built-in commands
-int handle_builtin(char **arglist) {
-    if (!arglist[0]) return 0;
+/* Process input: handle ; and & */
+void process_input(char *line) {
+    if (!line) return;
 
-    if (strcmp(arglist[0], "exit") == 0) {
-        printf("Exiting shell...\n");
-        exit(0);
-    } else if (strcmp(arglist[0], "cd") == 0) {
-        if (!arglist[1]) {
-            fprintf(stderr, "cd: expected argument\n");
-        } else if (chdir(arglist[1]) != 0) {
-            perror("cd");
+    char *saveptr = NULL;
+    char *cmd_str = strtok_r(line, ";", &saveptr);
+
+    while (cmd_str != NULL) {
+        int background = 0;
+        size_t len = strlen(cmd_str);
+        if (len > 0 && cmd_str[len - 1] == '&') {
+            background = 1;
+            cmd_str[len - 1] = '\0';
         }
-        return 1;
-    } else if (strcmp(arglist[0], "help") == 0) {
-        printf("Built-in commands:\n  exit\n  cd\n  help\n  history\n  jobs\n");
-        return 1;
-    } else if (strcmp(arglist[0], "jobs") == 0) {
-        printf("Job control not implemented.\n");
-        return 1;
+
+        command_t commands[MAX_COMMANDS];
+        int ncmds = tokenize(cmd_str, commands);
+
+        pid_t pid = fork();
+        if (pid == 0) {
+            execute(commands, ncmds);
+            exit(0);
+        } else if (pid > 0) {
+            if (background) {
+                add_bg_job(pid, cmd_str);
+                printf("[running in background] %s (PID %d)\n", cmd_str, pid);
+            } else {
+                waitpid(pid, NULL, 0);
+            }
+        }
+        cmd_str = strtok_r(NULL, ";", &saveptr);
     }
-    return 0; // not a built-in
 }
 
-// Tokenize commands (I/O redirection and pipes)
-int tokenize(char *line, command_t *commands) {
-    int cmd_count = 0;
-    char *token;
-    char *saveptr;
-    char *line_copy = strdup(line);
-
-    commands[cmd_count].argv = malloc(sizeof(char*) * MAXARGS);
-    commands[cmd_count].input_file = NULL;
-    commands[cmd_count].output_file = NULL;
-    int arg_index = 0;
-
-    token = strtok_r(line_copy, " \t\n", &saveptr);
-    while (token) {
-        if (strcmp(token, "<") == 0) {
-            token = strtok_r(NULL, " \t\n", &saveptr);
-            commands[cmd_count].input_file = strdup(token);
-        } else if (strcmp(token, ">") == 0) {
-            token = strtok_r(NULL, " \t\n", &saveptr);
-            commands[cmd_count].output_file = strdup(token);
-        } else if (strcmp(token, "|") == 0) {
-            commands[cmd_count].argv[arg_index] = NULL;
-            cmd_count++;
-            commands[cmd_count].argv = malloc(sizeof(char*) * MAXARGS);
-            commands[cmd_count].input_file = NULL;
-            commands[cmd_count].output_file = NULL;
-            arg_index = 0;
-        } else {
-            commands[cmd_count].argv[arg_index++] = strdup(token);
+/* main shell loop */
+void shell_loop() {
+    while (1) {
+        check_bg_jobs();
+        char *line = read_cmd("FCIT> ", stdin);
+        if (!line) break;
+        if (strcmp(line, "exit") == 0) {
+            printf("Bye!\n");
+            free(line);
+            break;
         }
-        token = strtok_r(NULL, " \t\n", &saveptr);
+        if (strcmp(line, "jobs") == 0) {
+            print_bg_jobs();
+            free(line);
+            continue;
+        }
+        process_input(line);
+        free(line);
     }
-
-    commands[cmd_count].argv[arg_index] = NULL;
-    cmd_count++;
-    free(line_copy);
-    return cmd_count;
 }

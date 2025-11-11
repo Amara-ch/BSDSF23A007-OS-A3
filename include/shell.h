@@ -1,23 +1,33 @@
 #ifndef SHELL_H
 #define SHELL_H
 
+#include <stddef.h>   /* for size_t */
 #include <stdio.h>
 
-// Maximum arguments per command
-#define MAXARGS 64
+#define MAX_ARGS 100
+#define MAX_COMMANDS 20
+#define MAX_BG_JOBS 50
 
-// Command structure for I/O redirection and pipes
 typedef struct command {
-    char **argv;           // Argument list
-    char *input_file;      // Input redirection file
-    char *output_file;     // Output redirection file
+    char *args[MAX_ARGS];    /* argv-style null-terminated array */
+    char *input_file;        /* filename for '<' or NULL */
+    char *output_file;       /* filename for '>' or NULL */
+    int pipe_to_next;        /* 1 if this cmd pipes to the next */
+    int background;          /* 1 if ends with & */
 } command_t;
 
-// Function declarations
-char* read_cmd(const char* prompt, FILE* fp);
-int handle_builtin(char **arglist);
+typedef struct bg_job {
+    int pid;
+    char cmdline[256];  /* store command line string for jobs listing */
+} bg_job_t;
 
-int tokenize(char *line, command_t *commands);       // returns number of commands
+/* Readline-based read function */
+char* read_cmd(const char* prompt, FILE* fp);
+
+/* Tokenize input line into commands */
+int tokenize(char *line, command_t *commands);
+
+/* Execute N commands (pipeline or single) */
 void execute(command_t *commands, int ncmds);
 
-#endif
+#endif /* SHELL_H */
