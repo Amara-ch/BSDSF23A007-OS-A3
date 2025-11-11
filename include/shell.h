@@ -2,21 +2,26 @@
 #define SHELL_H
 
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <errno.h>
+#include <sys/wait.h>   // Needed for waitpid()
 
-#define MAX_LEN 512
-#define MAXARGS 10
-#define ARGLEN 30
-#define PROMPT "FCIT> "
+/* ---------- Function Prototypes ---------- */
 
-// Function prototypes
+/* Reads a command line from the user */
 char* read_cmd(char* prompt, FILE* fp);
+
+/* Breaks the command line into tokens */
 char** tokenize(char* cmdline);
+
+/* Executes external commands */
 int execute(char** arglist);
 
-#endif // SHELL_H
+/* Frees memory used by argument list */
+void free_args(char** arglist);
+
+/* Built-in command handler (Feature-2) */
+int handle_builtin(char **arglist);
+
+#endif
